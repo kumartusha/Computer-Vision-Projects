@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gesture Controlled 3D Data Visualization</title>
+    <meta name="description" content="Real-time gesture-controlled 3D holographic data visualization powered by Three.js and MediaPipe" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+    <style>
+        /* ── Reset ─────────────────────────────────────────────── */
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #06060e;
+            color: #00ffc8;
+            font-family: 'Share Tech Mono', 'Courier New', monospace;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        canvas { display: block; }
+
+        /* ── Loading overlay ───────────────────────────────────── */
+        #loading {
+            position: fixed; inset: 0; z-index: 100;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            background: #06060e;
+            transition: opacity 0.8s ease, visibility 0.8s;
+        }
+        #loading.hidden { opacity: 0; visibility: hidden; }
+
+        .spinner {
+            width: 60px; height: 60px;
+            border: 3px solid rgba(0, 255, 200, 0.1);
+            border-top-color: #00ffc8;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 24px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .loading-text { font-size: 14px; letter-spacing: 3px; color: #00ffc8; }
+        .loading-sub  { font-size: 11px; color: #447766; margin-top: 8px; }
+
+        /* ── HUD overlay ───────────────────────────────────────── */
+        #hud {
+            position: fixed; inset: 0;
+            pointer-events: none; z-index: 10;
+        }
+
+        .hud-panel {
+            position: absolute;
+            background: rgba(4, 18, 24, 0.55);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 255, 200, 0.12);
+            border-radius: 8px;
+            padding: 10px 16px;
+            font-size: 12px;
+            line-height: 1.7;
+        }
+
+        .top-left   { top: 16px;  left: 16px; }
+        .top-right  { top: 16px;  right: 16px; text-align: right; }
+        .bot-left   { bottom: 16px; left: 16px; }
+        .bot-right  { bottom: 16px; right: 16px; text-align: right; }
+
+        .hud-title {
+            font-size: 16px; font-weight: bold;
+            letter-spacing: 2px;
+            color: #00ffc8;
+            margin-bottom: 4px;
+            text-shadow: 0 0 12px rgba(0, 255, 200, 0.5);
+        }
+
+        .status-line { display: flex; align-items: center; gap: 6px; }
+        .dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: #ff4444;
+            box-shadow: 0 0 6px #ff4444;
+            transition: background 0.3s, box-shadow 0.3s;
+        }
+        .dot.on { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+
+        #status-text  { color: #88aaa0; }
+        #fps-val      { color: #66ddbb; }
+        #zoom-val     { color: #66ddbb; }
+        #palette-val  { color: #00ffc8; transition: color 0.3s; }
+
+        #gesture-val {
+            font-size: 18px; font-weight: bold;
+            letter-spacing: 1px;
+            transition: color 0.2s;
+        }
+
+        .hint { color: #3a7766; font-size: 11px; line-height: 1.8; }
+
+        /* ── Corner brackets ───────────────────────────────────── */
+        .corner {
+            position: absolute;
+            width: 28px; height: 28px;
+            border-color: rgba(0, 255, 200, 0.22);
+            border-style: solid;
+            border-width: 0;
+        }
+        .corner.tl { top: 6px;  left: 6px;  border-top-width: 2px; border-left-width: 2px; }
+        .corner.tr { top: 6px;  right: 6px; border-top-width: 2px; border-right-width: 2px; }
+        .corner.bl { bottom: 6px; left: 6px; border-bottom-width: 2px; border-left-width: 2px; }
+        .corner.br { bottom: 6px; right: 6px; border-bottom-width: 2px; border-right-width: 2px; }
+    </style>
+</head>
+<body>
+
+<!-- ─── Loading Screen ────────────────────────────────────────── -->
+<div id="loading">
+    <div class="spinner"></div>
+    <p class="loading-text">CONNECTING TO TRACKING SERVER</p>
+    <p class="loading-sub">Ensure server.py is running</p>
+</div>
+
+<!-- ─── HUD ───────────────────────────────────────────────────── -->
+<div id="hud">
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+
+    <!-- Top-left: title + status -->
+    <div class="hud-panel top-left">
+        <div class="hud-title">GESTURE CONTROL 3D</div>
+        <div class="status-line">
+            <span class="dot" id="ws-dot"></span>
+            <span id="status-text">DISCONNECTED</span>
+        </div>
+        <div>FPS: <span id="fps-val">0</span></div>
+    </div>
+
+    <!-- Top-right: zoom + palette -->
+    <div class="hud-panel top-right">
+        <div>ZOOM: <span id="zoom-val">1.0</span>×</div>
+        <div>PALETTE: <span id="palette-val">CYAN</span></div>
+    </div>
+
+    <!-- Bottom-left: gesture -->
+    <div class="hud-panel bot-left">
+        <div>GESTURE</div>
+        <div id="gesture-val">NONE</div>
+    </div>
+
+    <!-- Bottom-right: controls -->
+    <div class="hud-panel bot-right">
+        <div class="hint">POINT  →  Rotate</div>
+        <div class="hint">PINCH  →  Zoom</div>
+        <div class="hint">FIST   →  Drag</div>
+        <div class="hint">PALM   →  Reset</div>
+        <div class="hint">SWIPE  →  Colors</div>
+    </div>
+</div>
+
+<!-- ─── Three.js ──────────────────────────────────────────────── -->
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+    }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer }  from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }      from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+/* ══════════════════════════════════════════════════════════════════
+   PALETTES  (RGB 0-1)
+   ══════════════════════════════════════════════════════════════ */
+const PALETTES = [
+    { name: 'CYAN',    colors: [[0,1,1],[0,0.78,1],[0,0.6,1],[0.2,1,1],[0,1,0.78]]   },
+    { name: 'MAGENTA', colors: [[1,0,1],[0.78,0.2,1],[1,0,0.78],[1,0.4,1],[0.7,0,0.86]] },
+    { name: 'MATRIX',  colors: [[0.39,1,0],[0,1,0],[0.2,1,0.2],[0.39,0.78,0],[0,1,0.39]] },
+    { name: 'SOLAR',   colors: [[1,0.65,0],[1,0.39,0],[1,0.78,0],[1,0.55,0],[0.8,0.7,0]] },
+    { name: 'MIXED',   colors: [[1,0,1],[0,1,1],[0.39,1,0],[1,0.39,0],[0.39,0,1]]    },
+];
+let paletteIdx = 0;
+
+/* ══════════════════════════════════════════════════════════════════
+   CAMERA ORBIT STATE
+   ══════════════════════════════════════════════════════════════ */
+let camAngleX   = 0.35;          // pitch
+let camAngleY   = 0;             // yaw
+let camDist     = 16;
+let camTarget   = new THREE.Vector3(0, 0, 0);
+
+let tgtAngleX   = 0.35;
+let tgtAngleY   = 0;
+let tgtDist     = 16;
+let tgtTarget   = new THREE.Vector3(0, 0, 0);
+const autoRotate = 0.0015;       // rad/frame
+
+/* ══════════════════════════════════════════════════════════════════
+   3D DATA GENERATION  (mirrors Python data exactly)
+   ══════════════════════════════════════════════════════════════ */
+function generateData() {
+    const pos = [];
+
+    // Cluster A — sphere
+    for (let i = 0; i < 60; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi   = Math.random() * Math.PI;
+        const r     = 0.5 + Math.random();
+        pos.push(r*Math.sin(phi)*Math.cos(theta) - 2.5,
+                 r*Math.sin(phi)*Math.sin(theta),
+                 r*Math.cos(phi));
+    }
+
+    // Cluster B — offset sphere
+    for (let i = 0; i < 50; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi   = Math.random() * Math.PI;
+        const r     = 0.3 + Math.random() * 0.9;
+        pos.push(r*Math.sin(phi)*Math.cos(theta) + 2.5,
+                 r*Math.sin(phi)*Math.sin(theta) + 1,
+                 r*Math.cos(phi));
+    }
+
+    // DNA double helix
+    for (let i = 0; i < 70; i++) {
+        const t = i * 0.15;
+        const y = t * 0.3 - 3;
+        pos.push(Math.cos(t)*0.8,           y, Math.sin(t)*0.8);
+        pos.push(Math.cos(t+Math.PI)*0.8,   y, Math.sin(t+Math.PI)*0.8);
+    }
+
+    // Torus ring
+    const R = 2, r = 0.4;
+    for (let i = 0; i < 50; i++) {
+        const theta = i * Math.PI * 2 / 50;
+        const phi   = Math.random() * Math.PI * 2;
+        pos.push((R + r*Math.cos(phi))*Math.cos(theta),
+                 r*Math.sin(phi) + 3,
+                 (R + r*Math.cos(phi))*Math.sin(theta));
+    }
+
+    // Random scattered
+    for (let i = 0; i < 40; i++) {
+        pos.push((Math.random()-0.5)*8,
+                 (Math.random()-0.5)*8,
+                 (Math.random()-0.5)*6);
+    }
+
+    return new Float32Array(pos);
+}
+
+function computeEdges(positions, threshold) {
+    const n = positions.length / 3;
+    const edgePos = [];
+    for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+            const dx = positions[i*3]   - positions[j*3];
+            const dy = positions[i*3+1] - positions[j*3+1];
+            const dz = positions[i*3+2] - positions[j*3+2];
+            if (dx*dx + dy*dy + dz*dz < threshold*threshold) {
+                edgePos.push(positions[i*3], positions[i*3+1], positions[i*3+2]);
+                edgePos.push(positions[j*3], positions[j*3+1], positions[j*3+2]);
+            }
+        }
+    }
+    return new Float32Array(edgePos);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   GLOW TEXTURE (radial gradient for particle sprites)
+   ══════════════════════════════════════════════════════════════ */
+function createGlowTexture() {
+    const sz = 128, half = sz / 2;
+    const c = document.createElement('canvas');
+    c.width = c.height = sz;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(half, half, 0, half, half, half);
+    g.addColorStop(0.0,  'rgba(255,255,255,1.0)');
+    g.addColorStop(0.12, 'rgba(255,255,255,0.85)');
+    g.addColorStop(0.35, 'rgba(255,255,255,0.35)');
+    g.addColorStop(0.65, 'rgba(255,255,255,0.08)');
+    g.addColorStop(1.0,  'rgba(255,255,255,0.0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, sz, sz);
+    return new THREE.CanvasTexture(c);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   SCENE SETUP
+   ══════════════════════════════════════════════════════════════ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ReinhardToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.prepend(renderer.domElement);
+
+const scene  = new THREE.Scene();
+scene.background = new THREE.Color(0x06060e);
+scene.fog = new THREE.FogExp2(0x06060e, 0.018);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 200);
+
+/* ── Post-processing (bloom) ──────────────────────────────────── */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+const bloom = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    2.0,    // strength  — this is what makes it glow
+    0.6,    // radius
+    0.05    // threshold — almost everything blooms
+);
+composer.addPass(bloom);
+
+/* ── Starfield ────────────────────────────────────────────────── */
+{
+    const starPos = [];
+    for (let i = 0; i < 3000; i++) {
+        starPos.push((Math.random()-0.5)*180,
+                     (Math.random()-0.5)*180,
+                     (Math.random()-0.5)*180);
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+    const starMat = new THREE.PointsMaterial({
+        size: 0.08, color: 0x667788,
+        transparent: true, opacity: 0.7,
+        sizeAttenuation: true,
+    });
+    scene.add(new THREE.Points(starGeo, starMat));
+}
+
+/* ── Grid floor ───────────────────────────────────────────────── */
+{
+    const grid = new THREE.GridHelper(24, 24, 0x00aa99, 0x0a2a25);
+    grid.position.y = -5;
+    grid.material.transparent = true;
+    grid.material.opacity = 0.35;
+    scene.add(grid);
+}
+
+/* ── Data particles ───────────────────────────────────────────── */
+const dataPositions = generateData();
+const numPoints     = dataPositions.length / 3;
+const basePositions = new Float32Array(dataPositions);  // copy for breathing anim
+
+const ptGeo = new THREE.BufferGeometry();
+ptGeo.setAttribute('position', new THREE.Float32BufferAttribute(dataPositions, 3));
+
+// Initial colours (will be animated)
+const ptColors = new Float32Array(numPoints * 3);
+ptGeo.setAttribute('color', new THREE.Float32BufferAttribute(ptColors, 3));
+
+const ptMat = new THREE.PointsMaterial({
+    size: 0.32,
+    map: createGlowTexture(),
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.92,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true,
+});
+const particles = new THREE.Points(ptGeo, ptMat);
+scene.add(particles);
+
+/* ── Edge connections ─────────────────────────────────────────── */
+const edgePositions = computeEdges(basePositions, 1.5);
+const edgeGeo      = new THREE.BufferGeometry();
+edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3));
+
+// Edge colours (animated with palette)
+const edgeColors = new Float32Array(edgePositions.length);
+edgeGeo.setAttribute('color', new THREE.Float32BufferAttribute(edgeColors, 3));
+
+const edgeMat = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.22,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+});
+const edges = new THREE.LineSegments(edgeGeo, edgeMat);
+scene.add(edges);
+
+/* ══════════════════════════════════════════════════════════════════
+   ANIMATION HELPERS
+   ══════════════════════════════════════════════════════════════ */
+function animateColors(t) {
+    const pal = PALETTES[paletteIdx].colors;
+    const pn  = pal.length;
+
+    // Particle colours
+    const ca = particles.geometry.attributes.color.array;
+    for (let i = 0; i < numPoints; i++) {
+        const phase = ((i * 0.12) + t * 0.45) % pn;
+        const ci    = Math.floor(phase);
+        const frac  = phase - ci;
+        const c1    = pal[ci % pn];
+        const c2    = pal[(ci + 1) % pn];
+        ca[i*3]     = c1[0]*(1-frac) + c2[0]*frac;
+        ca[i*3+1]   = c1[1]*(1-frac) + c2[1]*frac;
+        ca[i*3+2]   = c1[2]*(1-frac) + c2[2]*frac;
+    }
+    particles.geometry.attributes.color.needsUpdate = true;
+
+    // Edge colours (dimmed version of palette)
+    const ea  = edges.geometry.attributes.color.array;
+    const en  = ea.length / 6; // number of edges (2 verts each)
+    for (let i = 0; i < en; i++) {
+        const phase = ((i * 0.08) + t * 0.3) % pn;
+        const ci    = Math.floor(phase);
+        const frac  = phase - ci;
+        const c1    = pal[ci % pn];
+        const c2    = pal[(ci + 1) % pn];
+        const r = (c1[0]*(1-frac) + c2[0]*frac) * 0.3;
+        const g = (c1[1]*(1-frac) + c2[1]*frac) * 0.3;
+        const b = (c1[2]*(1-frac) + c2[2]*frac) * 0.3;
+        ea[i*6]   = r;  ea[i*6+1] = g;  ea[i*6+2] = b;
+        ea[i*6+3] = r;  ea[i*6+4] = g;  ea[i*6+5] = b;
+    }
+    edges.geometry.attributes.color.needsUpdate = true;
+}
+
+function animatePositions(t) {
+    const pa = particles.geometry.attributes.position.array;
+    for (let i = 0; i < numPoints; i++) {
+        pa[i*3]   = basePositions[i*3]   + Math.sin(t*0.7 + i*0.5)  * 0.025;
+        pa[i*3+1] = basePositions[i*3+1] + Math.cos(t*0.5 + i*0.3)  * 0.025;
+        pa[i*3+2] = basePositions[i*3+2] + Math.sin(t*0.4 + i*0.7)  * 0.025;
+    }
+    particles.geometry.attributes.position.needsUpdate = true;
+}
+
+function updateCamera() {
+    tgtAngleY += autoRotate;
+
+    const lerp = 0.06;
+    camAngleX += (tgtAngleX - camAngleX) * lerp;
+    camAngleY += (tgtAngleY - camAngleY) * lerp;
+    camDist   += (tgtDist   - camDist)   * lerp;
+    camTarget.lerp(tgtTarget, lerp);
+
+    camera.position.set(
+        camTarget.x + camDist * Math.sin(camAngleY) * Math.cos(camAngleX),
+        camTarget.y + camDist * Math.sin(camAngleX),
+        camTarget.z + camDist * Math.cos(camAngleY) * Math.cos(camAngleX),
+    );
+    camera.lookAt(camTarget);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   HUD UPDATES
+   ══════════════════════════════════════════════════════════════ */
+const elFps     = document.getElementById('fps-val');
+const elZoom    = document.getElementById('zoom-val');
+const elPalette = document.getElementById('palette-val');
+const elGesture = document.getElementById('gesture-val');
+const elDot     = document.getElementById('ws-dot');
+const elStatus  = document.getElementById('status-text');
+
+const GESTURE_COLORS = {
+    'NONE':        '#5a8878',
+    'POINT':       '#ffcc00',
+    'PINCH':       '#66ff00',
+    'FIST':        '#ff8800',
+    'OPEN PALM':   '#00ffcc',
+    'SWIPE LEFT':  '#ff00ff',
+    'SWIPE RIGHT': '#ff00ff',
+};
+
+let lastGesture = 'NONE';
+
+function updateHUD() {
+    const baseZoom = 16;
+    const zoomLevel = (baseZoom / camDist).toFixed(1);
+    elZoom.textContent    = zoomLevel;
+    elPalette.textContent = PALETTES[paletteIdx].name;
+    elPalette.style.color = `rgb(${PALETTES[paletteIdx].colors[0].map(v=>Math.round(v*255)).join(',')})`;
+    elGesture.textContent = lastGesture;
+    elGesture.style.color = GESTURE_COLORS[lastGesture] || '#5a8878';
+}
+
+/* ── FPS counter ──────────────────────────────────────────────── */
+let fpsFrames = 0, fpsLast = performance.now();
+function tickFPS() {
+    fpsFrames++;
+    const now = performance.now();
+    if (now - fpsLast >= 500) {
+        elFps.textContent = Math.round(fpsFrames / ((now - fpsLast) / 1000));
+        fpsFrames = 0;
+        fpsLast = now;
+    }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   WEBSOCKET — receive gestures from Python
+   ══════════════════════════════════════════════════════════════ */
+let wsConnected = false;
+
+function handleGesture(data) {
+    if (!data.hand_detected) {
+        lastGesture = 'NONE';
+        return;
+    }
+
+    lastGesture = data.gesture;
+
+    // Normalise movement by frame size for resolution-independence
+    const nx = data.dx / (data.frame_w || 1);
+    const ny = data.dy / (data.frame_h || 1);
+
+    switch (data.gesture) {
+        case 'POINT':
+            tgtAngleY += nx * 4.0;
+            tgtAngleX += ny * 4.0;
+            tgtAngleX  = Math.max(-1.3, Math.min(1.3, tgtAngleX));
+            break;
+
+        case 'PINCH':
+            tgtDist -= ny * 25;
+            tgtDist  = Math.max(4, Math.min(45, tgtDist));
+            break;
+
+        case 'FIST':
+            tgtTarget.x += nx * 12;
+            tgtTarget.y -= ny * 12;
+            break;
+
+        case 'OPEN PALM':
+            tgtAngleX = 0.35;
+            tgtAngleY = camAngleY;      // keep current yaw (no jump)
+            tgtDist   = 16;
+            tgtTarget.set(0, 0, 0);
+            break;
+
+        case 'SWIPE LEFT':
+            paletteIdx = (paletteIdx + 1) % PALETTES.length;
+            break;
+
+        case 'SWIPE RIGHT':
+            paletteIdx = (paletteIdx - 1 + PALETTES.length) % PALETTES.length;
+            break;
+    }
+}
+
+function connectWS() {
+    const ws = new WebSocket('ws://localhost:8765');
+
+    ws.onopen = () => {
+        wsConnected = true;
+        elDot.classList.add('on');
+        elStatus.textContent = 'CONNECTED';
+        document.getElementById('loading').classList.add('hidden');
+    };
+
+    ws.onclose = () => {
+        wsConnected = false;
+        elDot.classList.remove('on');
+        elStatus.textContent = 'RECONNECTING…';
+        setTimeout(connectWS, 2000);
+    };
+
+    ws.onerror = () => ws.close();
+
+    ws.onmessage = (e) => {
+        try { handleGesture(JSON.parse(e.data)); }
+        catch (_) { /* ignore malformed */ }
+    };
+}
+
+connectWS();
+
+/* ══════════════════════════════════════════════════════════════════
+   RESIZE HANDLER
+   ══════════════════════════════════════════════════════════════ */
+window.addEventListener('resize', () => {
+    const w = window.innerWidth, h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    bloom.resolution.set(w, h);
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   KEYBOARD CONTROLS (fallback if no hand tracking)
+   ══════════════════════════════════════════════════════════════ */
+window.addEventListener('keydown', (e) => {
+    switch (e.key) {
+        case 'ArrowLeft':  tgtAngleY -= 0.15; break;
+        case 'ArrowRight': tgtAngleY += 0.15; break;
+        case 'ArrowUp':    tgtAngleX += 0.1;  break;
+        case 'ArrowDown':  tgtAngleX -= 0.1;  break;
+        case '+': case '=': tgtDist = Math.max(4, tgtDist - 1);  break;
+        case '-':           tgtDist = Math.min(45, tgtDist + 1); break;
+        case 'r':
+            tgtAngleX = 0.35; tgtAngleY = camAngleY;
+            tgtDist = 16; tgtTarget.set(0,0,0);
+            break;
+        case '1': case '2': case '3': case '4': case '5':
+            paletteIdx = parseInt(e.key) - 1;
+            break;
+    }
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   RENDER LOOP
+   ══════════════════════════════════════════════════════════════ */
+function animate() {
+    requestAnimationFrame(animate);
+    const t = performance.now() * 0.001;
+
+    updateCamera();
+    animateColors(t);
+    animatePositions(t);
+    updateHUD();
+    tickFPS();
+
+    composer.render();
+}
+
+animate();
+</script>
+</body>
+</html>
